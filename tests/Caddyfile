@@ -1,0 +1,11 @@
+{
+	storage s3 {
+		bucket caddy-ci-adapt-only
+		region us-east-1
+		prefix caddy-ci
+	}
+}
+
+:8080 {
+	respond "caddy-s3 acceptance"
+}

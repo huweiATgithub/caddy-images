@@ -1,0 +1,184 @@
+name: Build, test and publish caddy-s3
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/caddy-s3/**
+      - scripts/**
+      - tests/**
+      - .github/workflows/caddy-s3.yml
+  pull_request:
+    paths:
+      - images/caddy-s3/**
+      - scripts/**
+      - tests/**
+      - .github/workflows/caddy-s3.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: caddy-s3-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Validate release tooling
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          bash -n scripts/acceptance.sh
+      - name: Validate and resolve inputs
+        id: meta
+        run: python3 scripts/metadata.py
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: images/caddy-s3/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: caddy-s3:ci
+          build-args: |
+            BUILD_CADDY_VERSION=${{ steps.meta.outputs.caddy_version }}
+            PLUGIN_MODULE=${{ steps.meta.outputs.plugin_module }}
+            PLUGIN_REVISION=${{ steps.meta.outputs.plugin_revision }}
+            BUILDER_IMAGE=${{ steps.meta.outputs.builder_image }}
+            RUNTIME_IMAGE=${{ steps.meta.outputs.runtime_image }}
+          cache-from: type=gha,scope=caddy-s3
+          cache-to: type=gha,mode=max,scope=caddy-s3
+      - name: Test binary, adapter, architecture and official defaults
+        env:
+          PULL_IMAGE: 'false'
+          VERSION: ${{ steps.meta.outputs.caddy_version }}
+          RUNTIME: ${{ steps.meta.outputs.runtime_image }}
+        run: bash scripts/acceptance.sh caddy-s3:ci "$VERSION" "$RUNTIME"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: local-acceptance
+          path: acceptance-results/
+
+  publish:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: meta
+        run: python3 scripts/metadata.py
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push candidate (release tags are promoted after acceptance)
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: images/caddy-s3/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          build-args: |
+            BUILD_CADDY_VERSION=${{ steps.meta.outputs.caddy_version }}
+            PLUGIN_MODULE=${{ steps.meta.outputs.plugin_module }}
+            PLUGIN_REVISION=${{ steps.meta.outputs.plugin_revision }}
+            BUILDER_IMAGE=${{ steps.meta.outputs.builder_image }}
+            RUNTIME_IMAGE=${{ steps.meta.outputs.runtime_image }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.release }}
+            org.opencontainers.image.description=Caddy with pinned certmagic-s3 storage
+            io.caddy-images.inputs-sha256=${{ steps.meta.outputs.fingerprint }}
+            io.caddy-images.plugin-revision=${{ steps.meta.outputs.plugin_revision }}
+          cache-from: type=gha,scope=caddy-s3
+          cache-to: type=gha,mode=max,scope=caddy-s3
+          provenance: mode=max
+          sbom: true
+      - name: Check immutable release tags
+        id: existing
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+          FINGERPRINT: ${{ steps.meta.outputs.fingerprint }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check-release.py
+      - name: Resolve published digest
+        id: published
+        env:
+          EXISTING: ${{ steps.existing.outputs.digest }}
+          BUILT: ${{ steps.build.outputs.digest }}
+        run: |
+          digest=${EXISTING:-$BUILT}
+          [[ $digest =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Pull and test the actual GHCR image by digest
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.published.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.caddy_version }}
+          RUNTIME: ${{ steps.meta.outputs.runtime_image }}
+        run: bash scripts/acceptance.sh "$IMAGE@$DIGEST" "$VERSION" "$RUNTIME" authenticated-results
+      - name: Promote verified digest to immutable release tags
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.published.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          IFS=',' read -ra refs <<< "$TAGS"
+          args=()
+          for ref in "${refs[@]}"; do args+=(--tag "$ref"); done
+          docker buildx imagetools create "${args[@]}" "$IMAGE@$DIGEST"
+      - name: Verify anonymous pull of public release
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          RELEASE: ${{ steps.meta.outputs.release }}
+          DIGEST: ${{ steps.published.outputs.digest }}
+          VERSION: ${{ steps.meta.outputs.caddy_version }}
+          RUNTIME: ${{ steps.meta.outputs.runtime_image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          export DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          IFS=',' read -ra refs <<< "$TAGS"
+          for ref in "${refs[@]}"; do
+            if ! pull_output=$(docker pull --platform linux/amd64 "$ref" 2>&1); then
+              printf '%s\n' "$pull_output"
+              echo '::error::GHCR package must be Public. Set package visibility to Public in GitHub, then rerun this workflow; existing matching releases are reused.'
+              exit 1
+            fi
+            printf '%s\n' "$pull_output"
+            pulled_digest=$(printf '%s\n' "$pull_output" | sed -n 's/^Digest: //p')
+            [[ "$pulled_digest" == "$DIGEST" ]]
+          done
+          bash scripts/acceptance.sh "$IMAGE@$DIGEST" "$VERSION" "$RUNTIME" anonymous-results
+          {
+            echo '### Verified public caddy-s3 release'
+            echo "Image: $IMAGE:$RELEASE"
+            echo "Digest: $IMAGE@$DIGEST"
+            echo 'Passed: anonymous GHCR pull, caddy version, caddy.storage.s3, S3 Caddyfile adaptation, linux/amd64 and official runtime defaults.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: published-acceptance
+          path: |
+            authenticated-results/
+            anonymous-results/

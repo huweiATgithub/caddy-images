@@ -1,0 +1,9 @@
+{
+  "caddy_version": "2.11.6",
+  "plugin_module": "github.com/techknowlogick/certmagic-s3",
+  "plugin_revision": "6c26852bb192f1f0ccfe36b0508b3b9f12116632",
+  "build_revision": 1,
+  "platform": "linux/amd64",
+  "builder_image": "caddy:2.11.6-builder-alpine@sha256:096ec6e825e219175bd5be64b5e7a4000977f701a2bcaab825621d9fb1e1154b",
+  "runtime_image": "caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9"
+}

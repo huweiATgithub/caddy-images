@@ -1,0 +1,5 @@
+.git
+acceptance-results
+*-results
+__pycache__
+*.pyc
