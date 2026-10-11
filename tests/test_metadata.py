@@ -45,6 +45,25 @@ class MetadataTests(unittest.TestCase):
             out.write('\n# Input changed\n')
         self.assertNotEqual(a, self.metadata()['fingerprint'])
 
+    def test_effective_config_roundtrip_identity(self):
+        a = self.metadata()
+        result = subprocess.run(['python3', 'scripts/metadata.py'], cwd=self.root,
+            env={**os.environ, 'GITHUB_REPOSITORY_OWNER': 'MixedCaseOwner', 'GITHUB_OUTPUT': '',
+                 'RELEASE_CONFIG': a['release_config']}, text=True, capture_output=True, check=True)
+        b = dict(line.split('=', 1) for line in result.stdout.splitlines())
+        self.assertEqual(a, b)
+
+    def test_effective_config_changes_identity(self):
+        a = self.metadata()
+        cfg = json.loads(a['release_config']); cfg['build_revision'] = 2
+        result = subprocess.run(['python3', 'scripts/metadata.py'], cwd=self.root,
+            env={**os.environ, 'GITHUB_REPOSITORY_OWNER': 'MixedCaseOwner', 'GITHUB_OUTPUT': '',
+                 'RELEASE_CONFIG': json.dumps(cfg)}, text=True, capture_output=True, check=True)
+        b = dict(line.split('=', 1) for line in result.stdout.splitlines())
+        self.assertNotEqual(a['fingerprint'], b['fingerprint'])
+        self.assertTrue(b['tags'].endswith('-r2'))
+        self.assertNotIn(',', b['tags'])
+
     def test_plugin_must_be_full_commit(self):
         self.update(plugin_revision='main'); self.metadata(success=False)
 

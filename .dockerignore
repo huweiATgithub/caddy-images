@@ -3,3 +3,4 @@ acceptance-results
 *-results
 __pycache__
 *.pyc
+resolved-image.json

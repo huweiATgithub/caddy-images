@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 # Values are supplied from image.json by CI; these defaults also support local builds.
-ARG BUILDER_IMAGE=caddy:2.11.6-builder-alpine@sha256:096ec6e825e219175bd5be64b5e7a4000977f701a2bcaab825621d9fb1e1154b
-ARG RUNTIME_IMAGE=caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9
+ARG BUILDER_IMAGE=caddy:2.11.7-builder-alpine@sha256:d995bae802dc640e494ee7c8dfb95717b95daa8ec5f6bf4dd294b78f6e995c4f
+ARG RUNTIME_IMAGE=caddy:2.11.7-alpine@sha256:173b26306d711395accaeba8b67afcaad2a085ccb1e6bf26010bfe8c095a5229
 FROM ${BUILDER_IMAGE} AS builder
-ARG BUILD_CADDY_VERSION=2.11.6
+ARG BUILD_CADDY_VERSION=2.11.7
 ARG PLUGIN_MODULE=github.com/techknowlogick/certmagic-s3
 ARG PLUGIN_REVISION=6c26852bb192f1f0ccfe36b0508b3b9f12116632
 ENV CGO_ENABLED=0
